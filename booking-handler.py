@@ -2,6 +2,17 @@ import boto3
 import json
 import uuid
 from datetime import datetime
+from decimal import Decimal
+
+# Helper function to convert DynamoDB's Decimal to native Python types
+def decimal_to_native(obj):
+    if isinstance(obj, list):
+        return [decimal_to_native(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: decimal_to_native(v) for k, v in obj.items()}
+    elif isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    return obj
 
 def bookFlight(event, context):
     print("Received event:", json.dumps(event, indent=4))  # Debugging: Log the incoming event
@@ -54,6 +65,8 @@ def bookFlight(event, context):
                 "body": json.dumps({"error": "Flight not found"})
             }
 
+        # Convert flight data to native Python types
+        flight = decimal_to_native(flight)
         print(f"Flight found: {json.dumps(flight, indent=4)}")  # Debugging: Log flight details
 
         available_seats = flight.get("seatAvailability", 0)
