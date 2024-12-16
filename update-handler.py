@@ -1,9 +1,21 @@
 import json
 import boto3
+from decimal import Decimal
 
 # Initialize DynamoDB
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('Bookings')  # Align table name with booking-handler.py
+
+# Helper function to convert Decimal to native Python types
+def decimal_to_native(obj):
+    if isinstance(obj, list):
+        return [decimal_to_native(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: decimal_to_native(v) for k, v in obj.items()}
+    elif isinstance(obj, Decimal):
+        # Convert Decimal to int if no fractional part, otherwise float
+        return int(obj) if obj % 1 == 0 else float(obj)
+    return obj
 
 def lambda_handler(event, context):
     try:
@@ -30,7 +42,7 @@ def lambda_handler(event, context):
 
         if updated_seats:
             update_expression.append("seats = :seats")
-            expression_attribute_values[":seats"] = updated_seats
+            expression_attribute_values[":seats"] = Decimal(updated_seats)  # Convert to Decimal
 
         if updated_date:
             update_expression.append("departureDate = :departureDate")
@@ -51,12 +63,15 @@ def lambda_handler(event, context):
             ReturnValues="UPDATED_NEW"
         )
 
-        print(f"Booking updated successfully: {json.dumps(response, indent=4)}")  # Debugging
+        # Convert response attributes to native types
+        updated_attributes = decimal_to_native(response.get('Attributes', {}))
+
+        print(f"Booking updated successfully: {json.dumps(updated_attributes, indent=4)}")  # Debugging
         return {
             'statusCode': 200,
             'body': json.dumps({
                 'message': 'Booking updated successfully',
-                'updatedAttributes': response.get('Attributes', {})
+                'updatedAttributes': updated_attributes
             })
         }
     except Exception as e:
