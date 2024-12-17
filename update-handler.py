@@ -5,6 +5,7 @@ from decimal import Decimal
 # Initialize DynamoDB
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('Bookings')  # Align table name with booking-handler.py
+flights_table = dynamodb.Table('Flights')  # Flights table
 
 # Helper function to convert Decimal to native Python types
 def decimal_to_native(obj):
@@ -13,15 +14,14 @@ def decimal_to_native(obj):
     elif isinstance(obj, dict):
         return {k: decimal_to_native(v) for k, v in obj.items()}
     elif isinstance(obj, Decimal):
-        # Convert Decimal to int if no fractional part, otherwise float
-        return int(obj) if obj % 1 == 0 else float(obj)
+        return float(obj) if obj % 1 != 0 else int(obj)  # Convert Decimal to int or float
     return obj
 
 def lambda_handler(event, context):
     try:
         print("Received event:", json.dumps(event, indent=4))  # Debugging: Log event
 
-        # Parse the request body
+        # Parse request body
         body = json.loads(event.get('body', '{}'))
         booking_id = body.get('bookingId')
         updated_seats = body.get('seats')
@@ -36,17 +36,63 @@ def lambda_handler(event, context):
 
         print(f"Updating booking with bookingId: {booking_id}")  # Debugging
 
-        # Prepare Update Expression
+        # Retrieve the booking
+        response = table.get_item(Key={'bookingId': booking_id})
+        booking = response.get('Item')
+
+        if not booking:
+            print(f"Error: Booking with bookingId {booking_id} not found")  # Debugging
+            return {
+                'statusCode': 404,
+                'body': json.dumps({'error': 'Booking not found'})
+            }
+
+        # Check if the booking is already canceled
+        if booking.get('status') == 'canceled':
+            print(f"Error: Booking with bookingId {booking_id} is already canceled")  # Debugging
+            return {
+                'statusCode': 400,
+                'body': json.dumps({'error': 'Booking has already been canceled'})
+            }
+
+        # Retrieve the associated flight details
+        flight_id = booking['flightId']
+        flight_response = flights_table.get_item(
+            Key={'flightId': flight_id, 'departureDate': updated_date}
+        )
+        flight = flight_response.get('Item')
+
+        if not flight:
+            print(f"Error: Flight with flightId {flight_id} and departureDate {updated_date} not found")  # Debugging
+            return {
+                'statusCode': 404,
+                'body': json.dumps({'error': 'Flight not found'})
+            }
+
+        # Get current seat availability
+        available_seats = flight.get('seatAvailability', 0)
+        print(f"Available seats for flightId {flight_id}: {available_seats}")  # Debugging
+
+        if updated_seats:
+            # Handle the seat subtraction for updates
+            original_seats = booking.get('seats', 0)
+            seats_diff = updated_seats - original_seats
+            # Subtract seats from available seats
+            available_seats -= seats_diff
+            flights_table.update_item(
+                Key={'flightId': flight_id, 'departureDate': updated_date},
+                UpdateExpression="SET seatAvailability = :seatAvailability",
+                ExpressionAttributeValues={':seatAvailability': available_seats}
+            )
+            print(f"Seat availability updated for flightId {flight_id}, new available seats: {available_seats}")  # Debugging
+
+        # Prepare update expression for booking
         update_expression = []
         expression_attribute_values = {}
 
         if updated_seats:
             update_expression.append("seats = :seats")
-            expression_attribute_values[":seats"] = Decimal(updated_seats)  # Convert to Decimal
-
-        if updated_date:
-            update_expression.append("departureDate = :departureDate")
-            expression_attribute_values[":departureDate"] = updated_date
+            expression_attribute_values[":seats"] = Decimal(updated_seats)
 
         if not update_expression:
             print("Error: No fields to update")  # Debugging
@@ -55,7 +101,7 @@ def lambda_handler(event, context):
                 'body': json.dumps({'error': 'No fields to update'})
             }
 
-        # Execute update
+        # Execute booking update
         response = table.update_item(
             Key={'bookingId': booking_id},
             UpdateExpression="SET " + ", ".join(update_expression),
@@ -74,6 +120,7 @@ def lambda_handler(event, context):
                 'updatedAttributes': updated_attributes
             })
         }
+
     except Exception as e:
         print(f"Error updating booking: {str(e)}")  # Debugging
         return {
